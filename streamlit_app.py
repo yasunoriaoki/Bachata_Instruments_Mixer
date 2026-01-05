@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import subprocess
+import sys
 import time
 import uuid
 import wave
@@ -76,7 +77,7 @@ def plot_spectrogram(audio, samplerate, title, cutoff_hz=None):
 
 def run_demucs(audio_path, out_dir, device="cpu"):
     cmd = [
-        os.environ.get("PYTHON", "python"),
+        sys.executable,
         "-m",
         "demucs",
         "-n",
