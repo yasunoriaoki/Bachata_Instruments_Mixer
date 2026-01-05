@@ -240,6 +240,7 @@ def new_session_dir(upload_name):
 
 
 def main():
+    global sd
     st.set_page_config(page_title="Bachata Instruments Mixer", page_icon="🎛️")
     st.title("Bachata Instruments Mixer")
     st.caption("Upload audio, separate stems with Demucs, then remix with sliders.")
