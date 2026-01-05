@@ -6,3 +6,4 @@ soundfile
 # sounddevice
 # demucs pulls torch/torchaudio; large install but required for separation.
 demucs
+torchcodec

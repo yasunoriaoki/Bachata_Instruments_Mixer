@@ -250,6 +250,8 @@ def main():
         st.session_state.session_id = None
         st.session_state.stems_dir = None
         st.session_state.stems = []
+    if "separating" not in st.session_state:
+        st.session_state.separating = False
     source = st.radio(
         "Input source",
         options=["Upload file", "Record (sounddevice)"],
@@ -331,7 +333,12 @@ def main():
     ):
         separate_disabled = True
 
-    if st.button("Separate", type="primary", disabled=separate_disabled):
+    if st.button(
+        "Separate instruments",
+        type="primary",
+        disabled=separate_disabled or st.session_state.separating,
+    ):
+        st.session_state.separating = True
         session_id, session_dir, stems_dir = new_session_dir(
             uploaded.name if uploaded else "recorded.wav"
         )
@@ -365,12 +372,16 @@ def main():
             write_wav(input_path, recording, record_settings["samplerate"])
             st.subheader("Recorded preview")
             st.audio(input_path)
+        progress = st.progress(0.0)
         with st.spinner("Running Demucs..."):
             try:
                 run_demucs(input_path, session_dir, device=device)
+                progress.progress(1.0)
             except subprocess.CalledProcessError as exc:
                 st.error(f"Demucs failed with code {exc.returncode}.")
                 return
+            finally:
+                st.session_state.separating = False
         stems = list_stems(stems_dir)
         if not stems:
             st.error("No stems found after separation.")
