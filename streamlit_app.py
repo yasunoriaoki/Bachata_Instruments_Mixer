@@ -252,9 +252,21 @@ def main():
         st.session_state.stems = []
     if "separating" not in st.session_state:
         st.session_state.separating = False
+    record_option = "Record (may not work on cloud)"
+    devices_available = False
+    if sd is None:
+        try:
+            import sounddevice as sd  # type: ignore
+        except ImportError:
+            sd = None
+    if sd is not None:
+        devices_available = bool(list_input_devices())
+    source_options = ["Upload file"]
+    if devices_available:
+        source_options.append(record_option)
     source = st.radio(
         "Input source",
-        options=["Upload file", "Record (sounddevice)"],
+        options=source_options,
         index=0,
         horizontal=True,
     )
@@ -269,14 +281,11 @@ def main():
             "Recording uses Python sounddevice (local machine only). "
             "On cloud deployments, use file upload instead."
         )
-        global sd
         if sd is None:
-            try:
-                import sounddevice as sd  # type: ignore
-            except ImportError:
-                sd = None
-        if sd is None:
-            st.error("sounddevice is not installed. Run: pip install sounddevice")
+            st.warning(
+                "Recording is disabled because sounddevice is not installed. "
+                "Use Upload file on cloud, or install sounddevice for local runs."
+            )
         else:
             devices = list_input_devices()
             if not devices:
