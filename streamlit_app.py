@@ -79,7 +79,9 @@ def audio_duration_seconds(path):
     return float(frames) / float(samplerate)
 
 
-def plot_spectrogram(audio, samplerate, title, cutoff_hz=None):
+@st.cache_data(show_spinner=False)
+def plot_spectrogram_cached(path, title, cutoff_hz=None):
+    audio, samplerate = read_audio(path)
     if audio.ndim > 1:
         audio = np.mean(audio, axis=1)
     fig, ax = plt.subplots(figsize=(8, 3))
@@ -659,11 +661,6 @@ def main():
                 stem_path = os.path.join(
                     st.session_state.stems_dir, f"{stem}.wav"
                 )
-                try:
-                    audio, sr = read_audio(stem_path)
-                except Exception as exc:  # pragma: no cover
-                    st.error(f"Failed to load {stem}.wav: {exc}")
-                    continue
                 label = stem
                 if stem == "drums" and split_drums:
                     label = "bongo/güira"
@@ -671,12 +668,15 @@ def main():
                     label = "guitars"
                 with st.expander(f"{label} spectrogram", expanded=False):
                     cutoff = cutoff_hz if (split_drums and stem == "drums") else None
-                    fig = plot_spectrogram(
-                        audio,
-                        sr,
-                        f"{label} spectrogram",
-                        cutoff_hz=cutoff,
-                    )
+                    try:
+                        fig = plot_spectrogram_cached(
+                            stem_path,
+                            f"{label} spectrogram",
+                            cutoff_hz=cutoff,
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        st.error(f"Failed to load {stem}.wav: {exc}")
+                        continue
                     st.pyplot(fig, clear_figure=True)
         normalize = st.checkbox("Normalize mix", value=True)
         if st.button("Render Remix"):
