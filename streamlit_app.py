@@ -612,13 +612,19 @@ def main():
 
     if st.session_state.stems_dir:
         st.subheader("Remix")
-        download_buf = zip_stems_dir(st.session_state.stems_dir)
-        st.download_button(
-            "Download stems (zip)",
-            data=download_buf,
-            file_name="stems.zip",
-            mime="application/zip",
-        )
+        if "download_zip" not in st.session_state:
+            st.session_state.download_zip = None
+        if st.button("Prepare stems zip"):
+            st.session_state.download_zip = zip_stems_dir(
+                st.session_state.stems_dir
+            )
+        if st.session_state.download_zip is not None:
+            st.download_button(
+                "Download stems (zip)",
+                data=st.session_state.download_zip,
+                file_name="stems.zip",
+                mime="application/zip",
+            )
         split_drums = False
         cutoff_hz = 3000
         if "drums" in st.session_state.stems:
