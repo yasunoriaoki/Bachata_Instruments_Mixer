@@ -80,7 +80,7 @@ def audio_duration_seconds(path):
 
 
 @st.cache_data(show_spinner=False)
-def plot_spectrogram_cached(path, title, cutoff_hz=None):
+def spectrogram_png_cached(path, title, cutoff_hz=None):
     audio, samplerate = read_audio(path)
     if audio.ndim > 1:
         audio = np.mean(audio, axis=1)
@@ -92,7 +92,11 @@ def plot_spectrogram_cached(path, title, cutoff_hz=None):
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Frequency (Hz)")
     fig.tight_layout()
-    return fig
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=120)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
 
 
 def run_demucs(audio_path, out_dir, device="cpu"):
@@ -391,6 +395,9 @@ def main():
         st.session_state.stems = []
     if "separating" not in st.session_state:
         st.session_state.separating = False
+    if "spec_images" not in st.session_state:
+        st.session_state.spec_images = {}
+        st.session_state.spec_meta = {}
 
     sessions = list_sessions()
     if ENABLE_SESSION_LOAD and sessions:
@@ -657,6 +664,59 @@ def main():
             )
         show_specs = st.checkbox("Show spectrograms", value=False)
         if show_specs:
+            current_meta = {
+                "stems_dir": st.session_state.stems_dir,
+                "cutoff_hz": cutoff_hz,
+                "split_drums": split_drums,
+            }
+            auto_refresh = st.checkbox("Auto-refresh spectrograms on cutoff change", value=True)
+            if st.session_state.spec_meta != current_meta:
+                st.session_state.spec_images = {}
+                st.session_state.spec_meta = current_meta
+                if auto_refresh:
+                    images = {}
+                    for stem in st.session_state.stems:
+                        stem_path = os.path.join(
+                            st.session_state.stems_dir, f"{stem}.wav"
+                        )
+                        label = stem
+                        if stem == "drums" and split_drums:
+                            label = "bongo/güira"
+                        if stem == "other":
+                            label = "guitars"
+                        cutoff = cutoff_hz if (split_drums and stem == "drums") else None
+                        try:
+                            images[stem] = spectrogram_png_cached(
+                                stem_path,
+                                f"{label} spectrogram",
+                                cutoff_hz=cutoff,
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            st.error(f"Failed to load {stem}.wav: {exc}")
+                            continue
+                    st.session_state.spec_images = images
+            if st.button("Update spectrograms"):
+                images = {}
+                for stem in st.session_state.stems:
+                    stem_path = os.path.join(
+                        st.session_state.stems_dir, f"{stem}.wav"
+                    )
+                    label = stem
+                    if stem == "drums" and split_drums:
+                        label = "bongo/güira"
+                    if stem == "other":
+                        label = "guitars"
+                    cutoff = cutoff_hz if (split_drums and stem == "drums") else None
+                    try:
+                        images[stem] = spectrogram_png_cached(
+                            stem_path,
+                            f"{label} spectrogram",
+                            cutoff_hz=cutoff,
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        st.error(f"Failed to load {stem}.wav: {exc}")
+                        continue
+                st.session_state.spec_images = images
             for stem in st.session_state.stems:
                 stem_path = os.path.join(
                     st.session_state.stems_dir, f"{stem}.wav"
@@ -667,17 +727,11 @@ def main():
                 if stem == "other":
                     label = "guitars"
                 with st.expander(f"{label} spectrogram", expanded=False):
-                    cutoff = cutoff_hz if (split_drums and stem == "drums") else None
-                    try:
-                        fig = plot_spectrogram_cached(
-                            stem_path,
-                            f"{label} spectrogram",
-                            cutoff_hz=cutoff,
-                        )
-                    except Exception as exc:  # pragma: no cover
-                        st.error(f"Failed to load {stem}.wav: {exc}")
-                        continue
-                    st.pyplot(fig, clear_figure=True)
+                    image = st.session_state.spec_images.get(stem)
+                    if image is None:
+                        st.caption("Click 'Update spectrograms' to render.")
+                    else:
+                        st.image(image)
         normalize = st.checkbox("Normalize mix", value=True)
         if st.button("Render Remix"):
             try:
