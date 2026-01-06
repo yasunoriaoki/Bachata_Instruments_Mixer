@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
+import json
+import io
 import os
 import subprocess
 import sys
 import time
 import uuid
 import wave
+import zipfile
 
 import numpy as np
 import streamlit as st
@@ -21,6 +24,11 @@ sd = None
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 SESSIONS_DIR = os.path.join(BASE_DIR, "webui_sessions")
 MODEL_NAME = "htdemucs"
+ENABLE_SESSION_LOAD = os.environ.get("ENABLE_SESSION_LOAD", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+)
 
 
 def ensure_dirs():
@@ -61,6 +69,16 @@ def write_wav(path, audio, samplerate):
         wf.writeframes(pcm.tobytes())
 
 
+def audio_duration_seconds(path):
+    if sf is not None:
+        info = sf.info(path)
+        return float(info.frames) / float(info.samplerate)
+    with wave.open(path, "rb") as wf:
+        frames = wf.getnframes()
+        samplerate = wf.getframerate()
+    return float(frames) / float(samplerate)
+
+
 def plot_spectrogram(audio, samplerate, title, cutoff_hz=None):
     if audio.ndim > 1:
         audio = np.mean(audio, axis=1)
@@ -89,6 +107,34 @@ def run_demucs(audio_path, out_dir, device="cpu"):
         audio_path,
     ]
     subprocess.run(cmd, check=True)
+
+
+def run_demucs_with_progress(audio_path, out_dir, device, progress_cb):
+    cmd = [
+        sys.executable,
+        "-m",
+        "demucs",
+        "-n",
+        MODEL_NAME,
+        "--device",
+        device,
+        "--out",
+        out_dir,
+        audio_path,
+    ]
+    process = subprocess.Popen(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    start = time.time()
+    while True:
+        ret = process.poll()
+        elapsed = time.time() - start
+        progress_cb(elapsed)
+        if ret is not None:
+            if ret != 0:
+                raise subprocess.CalledProcessError(ret, cmd)
+            return
+        time.sleep(0.25)
 
 
 def list_input_devices():
@@ -139,6 +185,96 @@ def list_stems(stems_dir):
     if not os.path.isdir(stems_dir):
         return []
     return sorted(f for f in os.listdir(stems_dir) if f.lower().endswith(".wav"))
+
+
+def session_metadata_path(session_dir):
+    return os.path.join(session_dir, "meta.json")
+
+
+def write_session_metadata(session_dir, input_name, stems_dir, stems):
+    payload = {
+        "input_name": input_name,
+        "stems_dir": stems_dir,
+        "stems": stems,
+        "created_at": time.time(),
+    }
+    with open(session_metadata_path(session_dir), "w") as fh:
+        json.dump(payload, fh)
+
+
+def list_sessions():
+    if not os.path.isdir(SESSIONS_DIR):
+        return []
+    sessions = []
+    for entry in os.listdir(SESSIONS_DIR):
+        session_dir = os.path.join(SESSIONS_DIR, entry)
+        if not os.path.isdir(session_dir):
+            continue
+        meta_path = session_metadata_path(session_dir)
+        meta = None
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r") as fh:
+                    meta = json.load(fh)
+            except Exception:
+                meta = None
+        stems_dir = None
+        stems = []
+        input_name = "recorded.wav"
+        created_at = os.path.getmtime(session_dir)
+        if meta:
+            stems_dir = meta.get("stems_dir")
+            stems = meta.get("stems") or []
+            input_name = meta.get("input_name") or input_name
+            created_at = meta.get("created_at") or created_at
+        else:
+            model_dir = os.path.join(session_dir, MODEL_NAME)
+            if os.path.isdir(model_dir):
+                track_dirs = [
+                    os.path.join(model_dir, d)
+                    for d in os.listdir(model_dir)
+                    if os.path.isdir(os.path.join(model_dir, d))
+                ]
+                if track_dirs:
+                    stems_dir = track_dirs[0]
+                    stems = [os.path.splitext(s)[0] for s in list_stems(stems_dir)]
+        if stems_dir and os.path.isdir(stems_dir):
+            sessions.append(
+                {
+                    "id": entry,
+                    "input_name": input_name,
+                    "stems_dir": stems_dir,
+                    "stems": stems,
+                    "created_at": created_at,
+                }
+            )
+    sessions.sort(key=lambda s: s["created_at"], reverse=True)
+    return sessions
+
+
+def safe_extract_zip(zip_bytes, dest_dir):
+    with zipfile.ZipFile(zip_bytes) as zf:
+        for member in zf.infolist():
+            if member.is_dir():
+                continue
+            name = member.filename
+            if name.startswith("/") or ".." in name.split("/"):
+                raise ValueError("Invalid zip entry path.")
+        zf.extractall(dest_dir)
+
+
+def zip_stems_dir(stems_dir):
+    mem = io.BytesIO()
+    with zipfile.ZipFile(mem, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(stems_dir):
+            for fname in files:
+                if not fname.lower().endswith(".wav"):
+                    continue
+                full_path = os.path.join(root, fname)
+                arcname = os.path.relpath(full_path, stems_dir)
+                zf.write(full_path, arcname)
+    mem.seek(0)
+    return mem
 
 
 def mix_stems(stems_dir, gains):
@@ -253,6 +389,50 @@ def main():
         st.session_state.stems = []
     if "separating" not in st.session_state:
         st.session_state.separating = False
+
+    sessions = list_sessions()
+    if ENABLE_SESSION_LOAD and sessions:
+        with st.expander("Load previous separation", expanded=False):
+            labels = [
+                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(s['created_at']))} - {s['input_name']}"
+                for s in sessions
+            ]
+            selected = st.selectbox("Saved sessions", options=labels, index=0)
+            if st.button("Load"):
+                idx = labels.index(selected)
+                session = sessions[idx]
+                st.session_state.session_id = session["id"]
+                st.session_state.stems_dir = session["stems_dir"]
+                st.session_state.stems = session["stems"]
+                st.success("Loaded saved separation.")
+
+    with st.expander("Import separated stems (zip)", expanded=False):
+        uploaded_zip = st.file_uploader("Upload stems zip", type=["zip"])
+        if uploaded_zip is not None:
+            if st.button("Import stems"):
+                session_id = uuid.uuid4().hex
+                session_dir = os.path.join(SESSIONS_DIR, session_id)
+                stems_dir = os.path.join(session_dir, "stems")
+                os.makedirs(stems_dir, exist_ok=True)
+                try:
+                    safe_extract_zip(uploaded_zip, stems_dir)
+                except Exception as exc:  # pragma: no cover
+                    st.error(f"Failed to import zip: {exc}")
+                    return
+                stems = [os.path.splitext(s)[0] for s in list_stems(stems_dir)]
+                if not stems:
+                    st.error("No .wav stems found in the zip.")
+                    return
+                write_session_metadata(
+                    session_dir,
+                    uploaded_zip.name,
+                    stems_dir,
+                    stems,
+                )
+                st.session_state.session_id = session_id
+                st.session_state.stems_dir = stems_dir
+                st.session_state.stems = stems
+                st.success("Imported stems.")
     record_option = "Record (may not work on cloud)"
     devices_available = False
     if sd is None:
@@ -322,11 +502,17 @@ def main():
                     value=10.0,
                     step=1.0,
                 )
+                recording_name = st.text_input(
+                    "Recording name (optional)",
+                    value="",
+                    help="Used to label saved separations.",
+                )
                 record_settings = {
                     "device_index": device_index,
                     "channels": int(channels),
                     "samplerate": int(samplerate),
                     "duration": float(duration),
+                    "recording_name": recording_name.strip() or "recorded.wav",
                 }
 
     device = st.selectbox("Demucs device", options=["cpu", "mps", "cuda"], index=0)
@@ -383,10 +569,24 @@ def main():
             st.subheader("Recorded preview")
             st.audio(input_path)
         progress = st.progress(0.0)
+        status = st.empty()
+        estimated = None
+        try:
+            estimated = audio_duration_seconds(input_path) * 3.0
+        except Exception:
+            estimated = None
         with st.spinner("Running Demucs..."):
             try:
-                run_demucs(input_path, session_dir, device=device)
+                def progress_cb(elapsed):
+                    if estimated:
+                        pct = min(elapsed / estimated, 0.95)
+                    else:
+                        pct = 0.5 if elapsed > 1.0 else 0.1
+                    progress.progress(pct)
+                    status.caption(f"Separating... {elapsed:.1f}s elapsed")
+                run_demucs_with_progress(input_path, session_dir, device=device, progress_cb=progress_cb)
                 progress.progress(1.0)
+                status.caption("Separation complete.")
             except subprocess.CalledProcessError as exc:
                 st.error(f"Demucs failed with code {exc.returncode}.")
                 return
@@ -396,6 +596,15 @@ def main():
         if not stems:
             st.error("No stems found after separation.")
             return
+        input_name = os.path.basename(input_path)
+        if source != "Upload file" and record_settings is not None:
+            input_name = record_settings.get("recording_name") or input_name
+        write_session_metadata(
+            session_dir,
+            input_name,
+            stems_dir,
+            [os.path.splitext(s)[0] for s in stems],
+        )
         st.session_state.session_id = session_id
         st.session_state.stems_dir = stems_dir
         st.session_state.stems = [os.path.splitext(s)[0] for s in stems]
@@ -403,6 +612,13 @@ def main():
 
     if st.session_state.stems_dir:
         st.subheader("Remix")
+        download_buf = zip_stems_dir(st.session_state.stems_dir)
+        st.download_button(
+            "Download stems (zip)",
+            data=download_buf,
+            file_name="stems.zip",
+            mime="application/zip",
+        )
         split_drums = False
         cutoff_hz = 3000
         if "drums" in st.session_state.stems:

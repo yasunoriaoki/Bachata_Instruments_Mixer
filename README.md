@@ -20,5 +20,8 @@ streamlit run streamlit_app.py
 ## Streamlit Cloud
 Place `requirements.txt` and `packages.txt` at the repo root (or configure Streamlit Cloud to use the `Bachata_Instruments_Mixer` folder) so `ffmpeg` gets installed.
 
+## Optional: disable load history
+Set `ENABLE_SESSION_LOAD=0` to hide the "Load previous separation" section in cloud deployments.
+
 ## Optional: enable local recording
 Uncomment `sounddevice` in `requirements.txt` and install it in a local environment.
